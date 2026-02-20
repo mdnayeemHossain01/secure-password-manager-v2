@@ -1,9 +1,20 @@
 import os
+import hashlib
 from getpass import getpass
 from vault import Vault
 from crypto import encrypt_password, decrypt_password
-from main import derive_key # Importing the key derivation from teammate's main
 from generator import generate_secure_password
+
+def derive_key(master_password, salt):
+    """Derive encryption key from master password and salt"""
+    return hashlib.scrypt(
+        password=master_password.encode(),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32
+    )
 
 # Initialize the exact same vault your teammate built
 vault = Vault()
@@ -11,7 +22,7 @@ vault = Vault()
 print("\n--- Advanced Password Manager v2 ---")
 master_password = getpass('Enter your Master Password: ')
 
-# Authentication Logic (Kept exactly the same)
+# Authentication Logic
 if not vault.salt_exists():
     print("\nCreating new vault...")
     salt = os.urandom(16)
@@ -36,7 +47,7 @@ else:
 while True:
     print("\n--- Menu ---")
     print("1. Add existing password")
-    print("2. Generate & save NEW password") # Our new feature!
+    print("2. Generate & save NEW password")
     print("3. Get password")
     print("4. List services")
     print("5. Delete Service")
@@ -52,7 +63,6 @@ while True:
 
     elif choice == '2':
         service = input("Enter service name for the new password: ")
-        # Call our new generator
         new_password = generate_secure_password()
         print(f"\nGenerated Password: {new_password}")
         print("Encrypting and saving to vault...")
