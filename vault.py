@@ -1,80 +1,84 @@
-
-import json
-import os
-from pathlib import Path
+import psycopg2
 
 class Vault:
     def __init__(self, vault_file='vault.json'):
-        self.vault_file = vault_file
+        # We ignore vault_file now, but keep it in the __init__ so main.py doesn't break!
+        
+        # ⚠️ IMPORTANT: Change 'YOUR_PASSWORD_HERE' to your actual PostgreSQL password 
+        self.conn = psycopg2.connect(
+            dbname="advanced_vault",
+            user="postgres",
+            password="YOUR_PASSWORD_HERE", 
+            host="localhost"
+        )
+        self.cursor = self.conn.cursor()
+        self._create_tables()
 
-    def _read_data(self):
-        '''helper to read data from file'''
-        if not Path(self.vault_file).exists():
-            return {}
-        with open(self.vault_file, 'r') as f:
-            return json.load(f)
-    
-    def _write_data(self, data):
-        '''helper to write data to file'''
-        with open(self.vault_file, 'w') as f:
-            json.dump(data, f, indent=2)
+    def _create_tables(self):
+        """Automatically create the SQL tables if they don't exist yet."""
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS vault_config (
+                id INTEGER PRIMARY KEY,
+                salt TEXT,
+                canary TEXT
+            );
+        """)
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS passwords (
+                service TEXT PRIMARY KEY,
+                encrypted_password TEXT
+            );
+        """)
+        self.conn.commit()
 
     def salt_exists(self):
-        '''Check if Salt Exists'''
-        data = self._read_data()
-        return data.get('salt') is not None
-        
+        self.cursor.execute("SELECT salt FROM vault_config WHERE id = 1;")
+        result = self.cursor.fetchone()
+        return result is not None and result[0] is not None
+
     def save_salt(self, salt):
-        '''Save salt to Vault'''
-        data = self._read_data()
-        data['salt'] = salt.hex()
-        self._write_data(data)
-    
+        # ON CONFLICT allows us to update the salt if it already exists
+        self.cursor.execute("""
+            INSERT INTO vault_config (id, salt) VALUES (1, %s)
+            ON CONFLICT (id) DO UPDATE SET salt = EXCLUDED.salt;
+        """, (salt.hex(),))
+        self.conn.commit()
+
     def load_salt(self):
-        '''Load salt from vault'''
-        data = self._read_data()
-        return bytes.fromhex(data['salt'])
-    
+        self.cursor.execute("SELECT salt FROM vault_config WHERE id = 1;")
+        result = self.cursor.fetchone()
+        return bytes.fromhex(result[0]) if result else None
+
     def save_password(self, service, encrypted_data):
-        '''Save encrypted password'''
-        data = self._read_data()
-
-        if 'passwords' not in data:
-            data['passwords'] = {}
-        
-        data['passwords'][service] = encrypted_data.hex()
-        self._write_data(data)
-
-        print(f"Password for {service} was saved successfully")
+        self.cursor.execute("""
+            INSERT INTO passwords (service, encrypted_password) 
+            VALUES (%s, %s)
+            ON CONFLICT (service) DO UPDATE SET encrypted_password = EXCLUDED.encrypted_password;
+        """, (service, encrypted_data.hex()))
+        self.conn.commit()
+        print(f"Password for {service} was saved successfully to the database")
 
     def get_password(self, service):
-        '''Retreive encrypted password'''
-        data = self._read_data()
-        if 'passwords' not in data or service not in data['passwords']:
-            return None
-        return bytes.fromhex(data['passwords'][service])
-    
+        self.cursor.execute("SELECT encrypted_password FROM passwords WHERE service = %s;", (service,))
+        result = self.cursor.fetchone()
+        return bytes.fromhex(result[0]) if result else None
+
     def list_services(self):
-        ''''get all services'''
-        data = self._read_data()
-        return list(data.get('passwords', {}).keys())
-    
+        self.cursor.execute("SELECT service FROM passwords;")
+        results = self.cursor.fetchall()
+        return [row[0] for row in results]
+
     def save_canary(self, encrypted_canary):
-        data = self._read_data()
-        data['canary'] = encrypted_canary.hex()
-        self._write_data(data)
-    
+        self.cursor.execute("UPDATE vault_config SET canary = %s WHERE id = 1;", (encrypted_canary.hex(),))
+        self.conn.commit()
+
     def get_canary(self):
-        data = self._read_data()
-        canary_hex = data.get('canary')
-        return bytes.fromhex(canary_hex) if canary_hex else None
+        self.cursor.execute("SELECT canary FROM vault_config WHERE id = 1;")
+        result = self.cursor.fetchone()
+        return bytes.fromhex(result[0]) if result and result[0] else None
 
     def delete_service(self, service):
-        """delete a service"""
-        data = self._read_data()
-        if 'passwords' not in data or service not in data['passwords']:
-            return False
-        
-        del data['passwords'][service]
-        self._write_data(data)
-        return True
+        self.cursor.execute("DELETE FROM passwords WHERE service = %s RETURNING service;", (service,))
+        deleted = self.cursor.fetchone()
+        self.conn.commit()
+        return deleted is not None
